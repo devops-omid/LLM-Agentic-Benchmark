@@ -403,8 +403,13 @@ export default function App() {
               theme={theme}
             />
 
-            {/* Interactive SVG Charts */}
-            <ChartsView runData={activeRunData} theme={theme} />
+            {/* Interactive Telemetry & ECharts Visualizer */}
+            <ChartsView 
+              runData={activeRunData} 
+              theme={theme} 
+              models={models}
+              activeModelId={config.modelId}
+            />
           </div>
         )}
 

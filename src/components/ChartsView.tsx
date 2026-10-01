@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
 import { 
   BenchmarkRunRaw, 
+  BenchmarkModel,
 } from '../types.js';
+import { ConcurrencySpeedChart } from './ConcurrencySpeedChart.js';
 import { 
   BarChart2, 
   TrendingUp, 
@@ -16,9 +18,16 @@ import { ThemeConfig } from '../lib/theme.js';
 interface ChartsViewProps {
   runData: BenchmarkRunRaw | null;
   theme: ThemeConfig;
+  models?: BenchmarkModel[];
+  activeModelId?: string;
 }
 
-export const ChartsView: React.FC<ChartsViewProps> = ({ runData, theme }) => {
+export const ChartsView: React.FC<ChartsViewProps> = ({ 
+  runData, 
+  theme,
+  models,
+  activeModelId,
+}) => {
   const [hoveredPoint, setHoveredPoint] = useState<{
     x: number;
     y: number;
@@ -29,8 +38,15 @@ export const ChartsView: React.FC<ChartsViewProps> = ({ runData, theme }) => {
 
   if (!runData || !runData.summary) {
     return (
-      <div className={`py-20 text-center text-xs p-8 rounded-xl border ${theme.cardBg} ${theme.border} ${theme.textMuted}`}>
-        No completed run data available to plot. Run a benchmark from the console to generate telemetry graphs.
+      <div className="space-y-6">
+        <ConcurrencySpeedChart
+          models={models}
+          activeModelId={activeModelId}
+          theme={theme}
+        />
+        <div className={`py-12 text-center text-xs p-8 rounded-xl border ${theme.cardBg} ${theme.border} ${theme.textMuted}`}>
+          No completed individual run telemetry active. Select a historical run from the Archive or execute a benchmark to inspect single-run TTFT scatter and throughput timeline graphs.
+        </div>
       </div>
     );
   }
@@ -103,6 +119,13 @@ export const ChartsView: React.FC<ChartsViewProps> = ({ runData, theme }) => {
 
   return (
     <div className="space-y-6">
+      {/* Primary Analytics: Speed vs Concurrency Graph (ECharts) */}
+      <ConcurrencySpeedChart
+        models={models}
+        activeModelId={runData?.model?.id || activeModelId}
+        theme={theme}
+      />
+
       {/* Visualizer Grid (High Precision Charts) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Graph 1: TTFT Distribution & Percentile Variance */}

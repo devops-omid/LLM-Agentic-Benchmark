@@ -151,3 +151,13 @@ export interface BenchmarkProgressEvent {
   summary?: BenchmarkSummaryMetrics;
   error?: string;
 }
+
+export interface ConcurrencyStatItem {
+  concurrency: number;
+  aggregateTps: number;
+  streamTps: number;
+  p50Ttft: number;
+  p95Ttft: number;
+  totalRequests: number;
+  source: 'benchmark' | 'calibrated';
+}

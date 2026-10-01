@@ -9,7 +9,8 @@ import {
   getRunRaw, 
   getRunReport, 
   deleteRun, 
-  seedInitialRunsIfEmpty 
+  seedInitialRunsIfEmpty,
+  getConcurrencyStats
 } from './server/storage.js';
 import { BenchmarkConfig } from './server/types.js';
 
@@ -135,6 +136,18 @@ app.get('/api/history', async (req, res) => {
   try {
     const history = await getHistoricalRuns();
     res.json({ history });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/concurrency-stats', async (req, res) => {
+  try {
+    const modelId = typeof req.query.modelId === 'string' && req.query.modelId.trim()
+      ? req.query.modelId.trim()
+      : getServerEnvConfig().defaultModel;
+    const stats = await getConcurrencyStats(modelId);
+    res.json({ modelId, stats });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
