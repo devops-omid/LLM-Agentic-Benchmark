@@ -9,6 +9,7 @@ import {
 } from './types.js';
 import { 
   NVIDIA_NIM_BASE_URL, 
+  HYPERQWEN_BASE_URL,
   SUPPORTED_MODELS, 
   generatePromptPayload 
 } from './config.js';
@@ -103,7 +104,11 @@ export class BenchmarkEngine extends EventEmitter {
             id: model.id,
             name: model.name,
             provider: model.provider,
-            endpoint: model.provider === 'google_gemini' ? 'https://generativelanguage.googleapis.com' : NVIDIA_NIM_BASE_URL,
+            endpoint: model.provider === 'google_gemini' 
+              ? 'https://generativelanguage.googleapis.com' 
+              : model.provider === 'hyperqwen'
+                ? HYPERQWEN_BASE_URL
+                : NVIDIA_NIM_BASE_URL,
           },
           config,
           summary: {
@@ -115,12 +120,10 @@ export class BenchmarkEngine extends EventEmitter {
             totalTokens: 0,
             totalWallTimeMs: 0,
             aggregateTps: 0,
-            avgGenerationTps: 0,
+            meanStreamTps: 0,
             ttft: { min: 0, max: 0, mean: 0, p50: 0, p90: 0, p95: 0, p99: 0 },
             itl: { min: 0, max: 0, mean: 0, p50: 0, p90: 0, p95: 0, p99: 0 },
-            totalDuration: { min: 0, max: 0, mean: 0, p50: 0, p90: 0, p95: 0, p99: 0 },
-            errorRatePercent: 100,
-            concurrency: config.concurrency,
+            concurrencyPeak: config.concurrency,
           },
           requests: [],
           telemetryPoints: [],
@@ -159,10 +162,12 @@ export class BenchmarkEngine extends EventEmitter {
 
     const nvidiaKey = process.env.NVIDIA_API_KEY;
     const geminiKey = process.env.GEMINI_API_KEY;
+    const hyperqwenKey = process.env.HYPERQWEN_API_KEY;
     const useRealNvidia = model.provider === 'nvidia_nim' && Boolean(nvidiaKey && nvidiaKey !== 'MY_NVIDIA_API_KEY');
     const useRealGemini = model.provider === 'google_gemini' && Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY');
+    const useRealHyperqwen = model.provider === 'hyperqwen' && Boolean(hyperqwenKey && hyperqwenKey !== 'MY_HYPERQWEN_API_KEY');
 
-    console.log(`[Benchmark] Starting ${runId} | Model: ${model.name} | Real NIM: ${useRealNvidia} | Real Gemini: ${useRealGemini}`);
+    console.log(`[Benchmark] Starting ${runId} | Model: ${model.name} | Real NIM: ${useRealNvidia} | Real Gemini: ${useRealGemini} | Real HyperQwen: ${useRealHyperqwen}`);
 
     const promptPayload = generatePromptPayload(config.promptTokens, config.systemPromptPreset);
 
@@ -227,6 +232,17 @@ export class BenchmarkEngine extends EventEmitter {
             nvidiaKey!, 
             isCancelled
           );
+        } else if (useRealHyperqwen) {
+          coldMetric = await this.executeRealOpenAICompatibleStream(
+            sIdx * 2 + 1, 
+            0, 
+            { ...config, promptTokens: stepContext }, 
+            model, 
+            stepPayload, 
+            HYPERQWEN_BASE_URL,
+            hyperqwenKey!, 
+            isCancelled
+          );
         } else if (useRealGemini) {
           coldMetric = await this.executeRealGeminiStream(
             sIdx * 2 + 1, 
@@ -265,6 +281,17 @@ export class BenchmarkEngine extends EventEmitter {
               model, 
               stepPayload, 
               nvidiaKey!, 
+              isCancelled
+            );
+          } else if (useRealHyperqwen) {
+            warmMetric = await this.executeRealOpenAICompatibleStream(
+              sIdx * 2 + 2, 
+              1, 
+              { ...config, promptTokens: stepContext }, 
+              model, 
+              stepPayload, 
+              HYPERQWEN_BASE_URL,
+              hyperqwenKey!, 
               isCancelled
             );
           } else if (useRealGemini) {
@@ -363,6 +390,17 @@ export class BenchmarkEngine extends EventEmitter {
               model, 
               promptPayload, 
               nvidiaKey!, 
+              isCancelled
+            );
+          } else if (useRealHyperqwen) {
+            metric = await this.executeRealOpenAICompatibleStream(
+              reqId, 
+              workerSlot, 
+              config, 
+              model, 
+              promptPayload, 
+              HYPERQWEN_BASE_URL,
+              hyperqwenKey!, 
               isCancelled
             );
           } else if (useRealGemini) {
@@ -475,9 +513,11 @@ export class BenchmarkEngine extends EventEmitter {
         provider: model.provider,
         endpoint: useRealNvidia 
           ? NVIDIA_NIM_BASE_URL 
-          : useRealGemini 
-            ? 'https://generativelanguage.googleapis.com' 
-            : 'hardware-calibrated-nim-engine',
+          : useRealHyperqwen
+            ? HYPERQWEN_BASE_URL
+            : useRealGemini 
+              ? 'https://generativelanguage.googleapis.com' 
+              : 'hardware-calibrated-nim-engine',
       },
       config,
       summary,
@@ -577,7 +617,8 @@ export class BenchmarkEngine extends EventEmitter {
 
         try {
           const parsed = JSON.parse(jsonStr);
-          const deltaContent = parsed.choices?.[0]?.delta?.content || '';
+          const delta = parsed.choices?.[0]?.delta;
+          const deltaContent = (delta?.content || '') + (delta?.reasoning_content || '') + (delta?.reasoning || '');
           if (deltaContent) {
             completionTokens++;
             if (samplePreview.length < 120) {
@@ -590,6 +631,128 @@ export class BenchmarkEngine extends EventEmitter {
             } else {
               const delta = Math.round(now - lastChunkTime);
               itlList.push(delta);
+              lastChunkTime = now;
+            }
+          }
+        } catch {
+          // ignore chunk parse errors
+        }
+      }
+    }
+
+    const tEnd = performance.now();
+    const totalDurationMs = Math.round(tEnd - t0);
+    const ttft = tFirst > 0 ? Math.round(tFirst - t0) : totalDurationMs;
+    const generationDurationSec = (tEnd - (tFirst > 0 ? tFirst : t0)) / 1000;
+    const tps = generationDurationSec > 0 ? Number((completionTokens / generationDurationSec).toFixed(1)) : 0;
+    const avgItl = itlList.length > 0 
+      ? Number((itlList.reduce((a, b) => a + b, 0) / itlList.length).toFixed(1)) 
+      : 0;
+
+    return {
+      requestId,
+      workerSlot,
+      startTime: Math.round(t0),
+      ttft,
+      totalDurationMs,
+      promptTokens: config.promptTokens,
+      completionTokens,
+      tps,
+      itlList,
+      avgItl,
+      status: 'completed',
+      statusCode: 200,
+      samplePreview: samplePreview.trim(),
+    };
+  }
+
+  /**
+   * Real OpenAI-compatible SSE streaming inference (e.g. HyperQwen vLLM)
+   */
+  private async executeRealOpenAICompatibleStream(
+    requestId: number,
+    workerSlot: number,
+    config: BenchmarkConfig,
+    model: BenchmarkModel,
+    prompt: { system: string; user: string },
+    baseUrl: string,
+    apiKey: string,
+    isCancelled: () => boolean
+  ): Promise<SingleRequestMetric> {
+    const t0 = performance.now();
+    let tFirst = 0;
+    let lastChunkTime = 0;
+    const itlList: number[] = [];
+    let completionTokens = 0;
+    let samplePreview = '';
+
+    const cleanBaseUrl = baseUrl.replace(/\/+$/, '');
+    const response = await fetch(`${cleanBaseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: model.id,
+        messages: [
+          { role: 'system', content: prompt.system },
+          { role: 'user', content: prompt.user }
+        ],
+        max_tokens: config.targetOutputTokens,
+        temperature: config.temperature,
+        stream: true,
+      }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`${model.name} (${model.provider}) returned HTTP ${response.status}: ${errText.slice(0, 200)}`);
+    }
+
+    if (!response.body) {
+      throw new Error(`${model.name} returned empty response body`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      if (isCancelled()) {
+        reader.cancel();
+        break;
+      }
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const now = performance.now();
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith('data:')) continue;
+        const jsonStr = trimmed.replace(/^data:\s*/, '');
+        if (jsonStr === '[DONE]') break;
+
+        try {
+          const parsed = JSON.parse(jsonStr);
+          const delta = parsed.choices?.[0]?.delta;
+          const deltaContent = (delta?.content || '') + (delta?.reasoning_content || '') + (delta?.reasoning || '');
+          if (deltaContent) {
+            completionTokens++;
+            if (samplePreview.length < 120) {
+              samplePreview += deltaContent;
+            }
+
+            if (tFirst === 0) {
+              tFirst = now;
+              lastChunkTime = now;
+            } else {
+              const deltaMs = Math.round(now - lastChunkTime);
+              itlList.push(deltaMs);
               lastChunkTime = now;
             }
           }
@@ -742,6 +905,11 @@ export class BenchmarkEngine extends EventEmitter {
       prefillMsPer1k = 8;
       baseItl = 8.5; // ~118 TPS
       jitterFactor = 0.8;
+    } else if (model.id.includes('qwen') || model.id.includes('27b')) {
+      baseTtft = 85;
+      prefillMsPer1k = 9;
+      baseItl = 9.8; // ~102 TPS
+      jitterFactor = 0.85;
     } else if (model.id.includes('11b')) {
       baseTtft = 75;
       prefillMsPer1k = 9;

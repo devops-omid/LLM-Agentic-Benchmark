@@ -1,7 +1,7 @@
 export interface BenchmarkModel {
   id: string;
   name: string;
-  provider: 'nvidia_nim' | 'google_gemini';
+  provider: 'nvidia_nim' | 'google_gemini' | 'hyperqwen';
   contextLimit: number;
   description: string;
   recommendedConcurrency: number;
@@ -129,4 +129,5 @@ export interface BenchmarkProgressEvent {
     status: string;
   };
   summary?: BenchmarkSummaryMetrics;
+  error?: string;
 }

@@ -4,8 +4,18 @@ import { BenchmarkModel } from './types.js';
 dotenv.config();
 
 export const NVIDIA_NIM_BASE_URL = 'https://integrate.api.nvidia.com/v1';
+export const HYPERQWEN_BASE_URL = process.env.HYPERQWEN_BASE_URL || 'http://192.168.1.110:18020/v1';
 
 export const SUPPORTED_MODELS: BenchmarkModel[] = [
+  {
+    id: 'qwen3.8-27b',
+    name: 'Qwen 3.8 27B',
+    provider: 'hyperqwen',
+    contextLimit: 153600,
+    description: 'Local high-performance 27B reasoning model hosted on HyperQwen vLLM with RadixAttention and KV-cache reuse.',
+    recommendedConcurrency: 16,
+    parameterSize: '27B (HyperQwen vLLM)'
+  },
   {
     id: 'meta/llama-3.2-11b-vision-instruct',
     name: 'Llama 3.2 11B Vision Instruct',
@@ -180,13 +190,17 @@ export function generatePromptPayload(tokens: number, preset: string = 'general'
 export function getServerEnvConfig() {
   const nvidiaKey = process.env.NVIDIA_API_KEY || '';
   const geminiKey = process.env.GEMINI_API_KEY || '';
+  const hyperqwenKey = process.env.HYPERQWEN_API_KEY || '';
   const hasNvidiaKey = Boolean(nvidiaKey && nvidiaKey !== 'MY_NVIDIA_API_KEY');
   const hasGeminiKey = Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY');
+  const hasHyperqwenKey = Boolean(hyperqwenKey && hyperqwenKey !== 'MY_HYPERQWEN_API_KEY');
 
   return {
     hasNvidiaKey,
     hasGeminiKey,
+    hasHyperqwenKey,
     nvidiaBaseUrl: NVIDIA_NIM_BASE_URL,
-    defaultModel: 'meta/llama-3.2-11b-vision-instruct',
+    hyperqwenBaseUrl: HYPERQWEN_BASE_URL,
+    defaultModel: hasHyperqwenKey ? 'qwen3.8-27b' : 'meta/llama-3.2-11b-vision-instruct',
   };
 }
