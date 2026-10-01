@@ -1,16 +1,16 @@
-import React, { useState } from 'react';
+import React, { useMemo } from 'react';
+import * as echarts from 'echarts';
 import { 
   BenchmarkRunRaw, 
   BenchmarkModel,
 } from '../types.js';
 import { ConcurrencySpeedChart } from './ConcurrencySpeedChart.js';
+import { EChart } from './EChart.js';
 import { 
   BarChart2, 
   TrendingUp, 
   Clock, 
-  Zap,
   Database,
-  Layers,
   CheckCircle2
 } from 'lucide-react';
 import { ThemeConfig } from '../lib/theme.js';
@@ -28,14 +28,6 @@ export const ChartsView: React.FC<ChartsViewProps> = ({
   models,
   activeModelId,
 }) => {
-  const [hoveredPoint, setHoveredPoint] = useState<{
-    x: number;
-    y: number;
-    title: string;
-    value: string;
-    details?: string;
-  } | null>(null);
-
   if (!runData || !runData.summary) {
     return (
       <div className="space-y-6">
@@ -51,71 +43,634 @@ export const ChartsView: React.FC<ChartsViewProps> = ({
     );
   }
 
-  const { summary, requests, telemetryPoints, config } = runData;
-  const completedRequests = requests.filter(r => r.status === 'completed');
+  const { summary, requests, telemetryPoints } = runData;
+  const completedRequests = useMemo(() => requests.filter(r => r.status === 'completed'), [requests]);
 
-  // Chart Dimensions
-  const chartHeight = 220;
-  const chartWidth = 640;
-  const padding = { top: 20, right: 30, bottom: 30, left: 55 };
-
-  // Chart 1: TTFT Distribution Scatter Math
-  const maxTtft = Math.max(...requests.map(r => r.ttft), summary.ttft.p99 * 1.15, 100);
-  const minTtft = Math.max(0, Math.min(...requests.map(r => r.ttft)) * 0.8);
-
-  const getTtftY = (val: number) => {
-    const range = maxTtft - minTtft || 1;
-    const norm = (val - minTtft) / range;
-    return chartHeight - padding.bottom - norm * (chartHeight - padding.top - padding.bottom);
-  };
-
-  const getTtftX = (idx: number, total: number) => {
-    const innerWidth = chartWidth - padding.left - padding.right;
-    return padding.left + (idx / Math.max(1, total - 1)) * innerWidth;
-  };
-
-  // Chart 2: Throughput Timeline Math
   const timeline = telemetryPoints && telemetryPoints.length > 0 ? telemetryPoints : [];
-  const maxTps = Math.max(...timeline.map(t => t.instantaneousTps), summary.aggregateTps * 1.2, 50);
-  const maxElapsed = timeline.length > 0 ? timeline[timeline.length - 1].elapsedMs : summary.totalWallTimeMs;
+  const peakTps = Math.round(Math.max(...timeline.map(t => t.instantaneousTps), summary.aggregateTps, 0));
 
-  const getTpsY = (tps: number) => {
-    const norm = Math.min(1, Math.max(0, tps / maxTps));
-    return chartHeight - padding.bottom - norm * (chartHeight - padding.top - padding.bottom);
-  };
-
-  const getTpsX = (elapsed: number) => {
-    const innerWidth = chartWidth - padding.left - padding.right;
-    const norm = maxElapsed > 0 ? elapsed / maxElapsed : 0;
-    return padding.left + norm * innerWidth;
-  };
-
-  const tpsPathD = timeline.reduce((acc, pt, i) => {
-    const x = getTpsX(pt.elapsedMs);
-    const y = getTpsY(pt.instantaneousTps);
-    return i === 0 ? `M ${x} ${y}` : `${acc} L ${x} ${y}`;
-  }, '');
-
-  const tpsAreaD = timeline.length > 0 
-    ? `${tpsPathD} L ${getTpsX(maxElapsed)} ${chartHeight - padding.bottom} L ${padding.left} ${chartHeight - padding.bottom} Z`
-    : '';
-
-  // Chart 3: Context Scaling & KV Cache Curve
   const ladderSteps = summary.ladderSteps || [];
   const hasLadder = ladderSteps.length > 0;
   const maxContext = hasLadder ? Math.max(...ladderSteps.map(s => s.contextTokens), 1024) : 65536;
-  const maxLadderTtft = hasLadder ? Math.max(...ladderSteps.map(s => Math.max(s.coldTtft, s.warmTtft)), 100) * 1.15 : 1000;
 
-  const getContextX = (tokens: number) => {
-    const innerWidth = chartWidth - padding.left - padding.right;
-    const norm = tokens / maxContext;
-    return padding.left + norm * innerWidth;
-  };
+  // Chart 1: TTFT Distribution & Percentile Variance Option
+  const ttftChartOption = useMemo<echarts.EChartsOption>(() => {
+    const nominalData: any[] = [];
+    const warmData: any[] = [];
+    const tailData: any[] = [];
 
-  const getLadderY = (ttft: number) => {
-    const norm = Math.min(1, Math.max(0, ttft / maxLadderTtft));
-    return chartHeight - padding.bottom - norm * (chartHeight - padding.top - padding.bottom);
-  };
+    completedRequests.forEach((req, idx) => {
+      const seq = req.requestId || (idx + 1);
+      const item = {
+        name: `Request #${seq}`,
+        value: [seq, req.ttft],
+        req,
+      };
+      if (req.isWarmKvCache) {
+        warmData.push(item);
+      } else if (req.ttft >= summary.ttft.p95) {
+        tailData.push(item);
+      } else {
+        nominalData.push(item);
+      }
+    });
+
+    const markLines = [
+      {
+        yAxis: summary.ttft.p50,
+        name: 'p50',
+        lineStyle: { color: theme.chart.p50LineColor, type: 'dashed' as const, width: 1.5 },
+        label: {
+          show: true,
+          position: 'insideEndTop' as const,
+          formatter: `p50: ${summary.ttft.p50}ms`,
+          color: theme.chart.p50LineColor,
+          fontSize: 10,
+          fontFamily: 'monospace',
+        },
+      },
+      {
+        yAxis: summary.ttft.p95,
+        name: 'p95',
+        lineStyle: { color: theme.chart.p95LineColor, type: 'dashed' as const, width: 1.5 },
+        label: {
+          show: true,
+          position: 'insideEndTop' as const,
+          formatter: `p95: ${summary.ttft.p95}ms`,
+          color: theme.chart.p95LineColor,
+          fontSize: 10,
+          fontFamily: 'monospace',
+        },
+      },
+    ];
+
+    const hostIdx = nominalData.length > 0 ? 0 : (warmData.length > 0 ? 1 : 2);
+
+    return {
+      backgroundColor: 'transparent',
+      grid: {
+        left: '2%',
+        right: '4%',
+        top: 48,
+        bottom: 44,
+        containLabel: true,
+      },
+      tooltip: {
+        trigger: 'item',
+        backgroundColor: theme.isDark ? '#0b0f17' : '#ffffff',
+        borderColor: theme.isDark ? '#1e293b' : '#e2e8f0',
+        borderWidth: 1,
+        padding: [10, 14],
+        textStyle: {
+          color: theme.isDark ? '#f8fafc' : '#0f172a',
+          fontSize: 12,
+        },
+        formatter: (params: any) => {
+          const req = params.data?.req;
+          if (!req) return '';
+          const isTail = req.ttft >= summary.ttft.p95;
+          const isWarm = req.isWarmKvCache;
+          const badgeBg = isWarm ? 'rgba(16, 185, 129, 0.15)' : isTail ? 'rgba(244, 63, 94, 0.15)' : 'rgba(56, 189, 248, 0.15)';
+          const badgeColor = isWarm ? '#10b981' : isTail ? '#f43f5e' : '#38bdf8';
+          const badgeText = isWarm ? 'Warm KV Hit' : isTail ? 'Tail (≥p95)' : 'Nominal Stream';
+
+          return `
+            <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; min-width: 190px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(128,128,128,0.25); padding-bottom: 4px; margin-bottom: 6px;">
+                <span style="font-weight: 700; font-size: 13px;">⚡ Request #${req.requestId || params.value[0]}</span>
+                <span style="font-size: 9px; font-weight: 600; padding: 2px 6px; border-radius: 4px; background: ${badgeBg}; color: ${badgeColor}; border: 1px solid ${badgeColor}40;">
+                  ${badgeText}
+                </span>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 4px; font-size: 11px;">
+                <div style="display: flex; justify-content: space-between;">
+                  <span style="color: ${theme.chart.textColor};">TTFT Latency:</span>
+                  <span style="font-weight: 700; color: ${badgeColor};">${req.ttft} ms</span>
+                </div>
+                <div style="display: flex; justify-content: space-between;">
+                  <span style="color: ${theme.chart.textColor};">Generation Speed:</span>
+                  <span style="font-weight: 700;">${req.tps} TPS</span>
+                </div>
+                <div style="display: flex; justify-content: space-between;">
+                  <span style="color: ${theme.chart.textColor};">Total Duration:</span>
+                  <span style="font-weight: 600;">${Math.round(req.totalDurationMs || 0)} ms</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; font-size: 10px; color: ${theme.chart.textColor};">
+                  <span>Worker Slot:</span>
+                  <span>Slot #${req.workerSlot ?? 0}</span>
+                </div>
+              </div>
+            </div>
+          `;
+        },
+      },
+      legend: {
+        top: 6,
+        left: 'center',
+        data: ['Nominal Streams', 'Warm KV-Cache Hits', 'Tail Latency (>=p95)'],
+        selectedMode: true,
+        textStyle: {
+          color: theme.isDark ? '#cbd5e1' : '#475569',
+          fontSize: 10,
+          fontWeight: 500,
+        },
+        itemGap: 12,
+      },
+      toolbox: {
+        top: 4,
+        right: 6,
+        itemSize: 12,
+        itemGap: 8,
+        iconStyle: { borderColor: theme.chart.textColor },
+        feature: {
+          dataZoom: { yAxisIndex: 'none', title: { zoom: 'Zoom Area', back: 'Restore View' } },
+          restore: { title: 'Reset Scale' },
+          saveAsImage: {
+            title: 'Export PNG',
+            name: `ttft_scatter_${runData.runId || 'run'}`,
+            pixelRatio: 2,
+          },
+        },
+      },
+      dataZoom: [
+        {
+          type: 'inside',
+          xAxisIndex: [0],
+          start: 0,
+          end: 100,
+        },
+        {
+          type: 'slider',
+          xAxisIndex: [0],
+          bottom: 2,
+          height: 16,
+          start: 0,
+          end: 100,
+          borderColor: theme.isDark ? '#334155' : '#cbd5e1',
+          backgroundColor: theme.isDark ? 'rgba(15, 23, 42, 0.4)' : 'rgba(241, 245, 249, 0.6)',
+          fillerColor: theme.isDark ? 'rgba(16, 185, 129, 0.25)' : 'rgba(0, 122, 255, 0.2)',
+          handleStyle: { color: '#10b981' },
+          textStyle: { color: theme.chart.textColor, fontSize: 9 },
+        },
+      ],
+      xAxis: {
+        type: 'value',
+        name: 'Sequence #',
+        nameLocation: 'middle',
+        nameGap: 22,
+        min: 1,
+        max: Math.max(completedRequests.length, 1),
+        axisLine: { lineStyle: { color: theme.chart.gridColor } },
+        axisLabel: { color: theme.chart.textColor, fontSize: 10, fontFamily: 'monospace' },
+        splitLine: { show: false },
+      },
+      yAxis: {
+        type: 'value',
+        name: 'TTFT (ms)',
+        nameLocation: 'end',
+        axisLine: { show: false },
+        axisLabel: {
+          color: theme.chart.textColor,
+          fontSize: 10,
+          fontFamily: 'monospace',
+          formatter: '{value}ms',
+        },
+        splitLine: {
+          lineStyle: { color: theme.chart.gridColor, type: 'dashed' },
+        },
+      },
+      series: [
+        {
+          name: 'Nominal Streams',
+          type: 'scatter',
+          data: nominalData,
+          symbolSize: 6,
+          itemStyle: {
+            color: theme.chart.scatterDotColor || '#38bdf8',
+            borderColor: theme.chart.scatterDotStroke || '#0284c7',
+            borderWidth: 1,
+          },
+          markLine: hostIdx === 0 ? { silent: true, symbol: ['none', 'none'], data: markLines } : undefined,
+        },
+        {
+          name: 'Warm KV-Cache Hits',
+          type: 'scatter',
+          data: warmData,
+          symbolSize: 7,
+          itemStyle: {
+            color: '#10b981',
+            borderColor: '#065f46',
+            borderWidth: 1,
+          },
+          markLine: hostIdx === 1 ? { silent: true, symbol: ['none', 'none'], data: markLines } : undefined,
+        },
+        {
+          name: 'Tail Latency (>=p95)',
+          type: 'effectScatter',
+          showEffectOn: 'render',
+          rippleEffect: {
+            brushType: 'stroke',
+            scale: 2.5,
+            period: 4,
+          },
+          data: tailData,
+          symbolSize: 8,
+          itemStyle: {
+            color: theme.chart.scatterTailColor || '#f43f5e',
+            borderColor: theme.chart.scatterTailStroke || '#fb7185',
+            borderWidth: 1.5,
+          },
+          markLine: hostIdx === 2 ? { silent: true, symbol: ['none', 'none'], data: markLines } : undefined,
+        },
+      ],
+    };
+  }, [completedRequests, summary, theme, runData.runId]);
+
+  // Chart 2: Throughput (TPS) Timeline Option
+  const tpsChartOption = useMemo<echarts.EChartsOption>(() => {
+    const timelineData = (timeline.length > 0 ? timeline : [
+      { elapsedMs: 0, instantaneousTps: summary.aggregateTps, activeWorkers: 1, completedRequests: 0, cumulativeTokens: 0 },
+      { elapsedMs: summary.totalWallTimeMs, instantaneousTps: summary.aggregateTps, activeWorkers: 1, completedRequests: summary.completedRequests, cumulativeTokens: summary.totalTokens }
+    ]).map(pt => ({
+      value: [Number((pt.elapsedMs / 1000).toFixed(2)), Math.round(pt.instantaneousTps)],
+      raw: pt,
+    }));
+
+    return {
+      backgroundColor: 'transparent',
+      grid: {
+        left: '2%',
+        right: '4%',
+        top: 48,
+        bottom: 44,
+        containLabel: true,
+      },
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: {
+          type: 'line',
+          lineStyle: { color: theme.chart.textColor, type: 'dashed' },
+        },
+        backgroundColor: theme.isDark ? '#0b0f17' : '#ffffff',
+        borderColor: theme.isDark ? '#1e293b' : '#e2e8f0',
+        borderWidth: 1,
+        padding: [10, 14],
+        textStyle: {
+          color: theme.isDark ? '#f8fafc' : '#0f172a',
+          fontSize: 12,
+        },
+        formatter: (params: any) => {
+          if (!Array.isArray(params) || params.length === 0) return '';
+          const item = params[0];
+          const raw = item.data?.raw;
+          const elapsedSec = (item.value[0] ?? 0).toFixed(1);
+          const tps = item.value[1] ?? 0;
+          const workers = raw?.activeWorkers ?? summary.concurrencyPeak ?? 1;
+          const completed = raw?.completedRequests ?? summary.completedRequests;
+
+          return `
+            <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; min-width: 180px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(128,128,128,0.25); padding-bottom: 4px; margin-bottom: 6px;">
+                <span style="font-weight: 700; font-size: 13px;">⏱️ ${elapsedSec}s elapsed</span>
+                <span style="font-size: 9px; font-weight: 600; padding: 2px 6px; border-radius: 4px; background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3);">
+                  ${workers} worker${workers > 1 ? 's' : ''}
+                </span>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 4px; font-size: 11px;">
+                <div style="display: flex; justify-content: space-between;">
+                  <span style="color: ${theme.chart.textColor};">Instantaneous TPS:</span>
+                  <span style="font-weight: 700; color: #10b981;">${tps} tokens/s</span>
+                </div>
+                <div style="display: flex; justify-content: space-between;">
+                  <span style="color: ${theme.chart.textColor};">Cluster Average:</span>
+                  <span style="font-weight: 600;">${summary.aggregateTps} tokens/s</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; font-size: 10px; color: ${theme.chart.textColor};">
+                  <span>Completed Runs:</span>
+                  <span>${completed} requests</span>
+                </div>
+              </div>
+            </div>
+          `;
+        },
+      },
+      legend: {
+        top: 6,
+        left: 'center',
+        data: ['Cluster Throughput (TPS)'],
+        selectedMode: true,
+        textStyle: {
+          color: theme.isDark ? '#cbd5e1' : '#475569',
+          fontSize: 10,
+          fontWeight: 500,
+        },
+      },
+      toolbox: {
+        top: 4,
+        right: 6,
+        itemSize: 12,
+        itemGap: 8,
+        iconStyle: { borderColor: theme.chart.textColor },
+        feature: {
+          dataZoom: { yAxisIndex: 'none', title: { zoom: 'Zoom Area', back: 'Restore View' } },
+          restore: { title: 'Reset Scale' },
+          saveAsImage: {
+            title: 'Export PNG',
+            name: `throughput_timeline_${runData.runId || 'run'}`,
+            pixelRatio: 2,
+          },
+        },
+      },
+      dataZoom: [
+        {
+          type: 'inside',
+          xAxisIndex: [0],
+          start: 0,
+          end: 100,
+        },
+        {
+          type: 'slider',
+          xAxisIndex: [0],
+          bottom: 2,
+          height: 16,
+          start: 0,
+          end: 100,
+          borderColor: theme.isDark ? '#334155' : '#cbd5e1',
+          backgroundColor: theme.isDark ? 'rgba(15, 23, 42, 0.4)' : 'rgba(241, 245, 249, 0.6)',
+          fillerColor: theme.isDark ? 'rgba(16, 185, 129, 0.25)' : 'rgba(0, 122, 255, 0.2)',
+          handleStyle: { color: '#10b981' },
+          textStyle: { color: theme.chart.textColor, fontSize: 9 },
+        },
+      ],
+      xAxis: {
+        type: 'value',
+        name: 'Elapsed (seconds)',
+        nameLocation: 'middle',
+        nameGap: 22,
+        min: 0,
+        axisLine: { lineStyle: { color: theme.chart.gridColor } },
+        axisLabel: {
+          color: theme.chart.textColor,
+          fontSize: 10,
+          fontFamily: 'monospace',
+          formatter: (val: number) => `${val.toFixed(1)}s`,
+        },
+        splitLine: { show: false },
+      },
+      yAxis: {
+        type: 'value',
+        name: 'Tokens / Sec',
+        nameLocation: 'end',
+        axisLine: { show: false },
+        axisLabel: {
+          color: theme.chart.textColor,
+          fontSize: 10,
+          fontFamily: 'monospace',
+        },
+        splitLine: {
+          lineStyle: { color: theme.chart.gridColor, type: 'dashed' },
+        },
+      },
+      series: [
+        {
+          name: 'Cluster Throughput (TPS)',
+          type: 'line',
+          smooth: true,
+          showSymbol: false,
+          symbolSize: 4,
+          lineStyle: {
+            color: theme.chart.tpsLineColor || '#10b981',
+            width: 2.5,
+          },
+          itemStyle: {
+            color: theme.chart.tpsLineColor || '#10b981',
+          },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: theme.isDark ? 'rgba(16, 185, 129, 0.4)' : 'rgba(0, 122, 255, 0.35)' },
+              { offset: 1, color: theme.isDark ? 'rgba(16, 185, 129, 0.02)' : 'rgba(0, 122, 255, 0.02)' },
+            ]),
+          },
+          markLine: {
+            silent: true,
+            symbol: ['none', 'none'],
+            data: [
+              {
+                yAxis: summary.aggregateTps,
+                name: 'Average TPS',
+                lineStyle: {
+                  color: theme.chart.tpsLineColor || '#10b981',
+                  type: 'dashed' as const,
+                  width: 1.5,
+                },
+                label: {
+                  show: true,
+                  position: 'insideEndTop' as const,
+                  formatter: `Avg ${summary.aggregateTps} TPS`,
+                  color: theme.chart.tpsLineColor || '#10b981',
+                  fontSize: 10,
+                  fontFamily: 'monospace',
+                },
+              },
+            ],
+          },
+          data: timelineData,
+        },
+      ],
+    };
+  }, [timeline, summary, theme, runData.runId]);
+
+  // Chart 3: Context Scaling & KV Cache Option
+  const ladderChartOption = useMemo<echarts.EChartsOption>(() => {
+    if (!ladderSteps || ladderSteps.length === 0) return {};
+
+    return {
+      backgroundColor: 'transparent',
+      grid: {
+        left: '2%',
+        right: '4%',
+        top: 48,
+        bottom: 44,
+        containLabel: true,
+      },
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: {
+          type: 'cross',
+          crossStyle: { color: theme.chart.textColor },
+          lineStyle: { color: theme.chart.textColor, type: 'dashed' },
+        },
+        backgroundColor: theme.isDark ? '#0b0f17' : '#ffffff',
+        borderColor: theme.isDark ? '#1e293b' : '#e2e8f0',
+        borderWidth: 1,
+        padding: [10, 14],
+        textStyle: {
+          color: theme.isDark ? '#f8fafc' : '#0f172a',
+          fontSize: 12,
+        },
+        formatter: (params: any) => {
+          if (!Array.isArray(params) || params.length === 0) return '';
+          const idx = params[0].dataIndex;
+          const step = ladderSteps[idx];
+          if (!step) return '';
+          const tokenStr = step.contextTokens === 0 ? '0 (Empty Context)' : `${step.contextTokens.toLocaleString()} tokens (${(step.contextTokens / 1024).toFixed(0)}K)`;
+
+          return `
+            <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; min-width: 210px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(128,128,128,0.25); padding-bottom: 4px; margin-bottom: 6px;">
+                <span style="font-weight: 700; font-size: 13px;">Stage #${step.stepIndex || (idx + 1)}</span>
+                <span style="font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 4px; background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3);">
+                  ${step.speedupFactor}x Faster
+                </span>
+              </div>
+              <div style="font-size: 11px; margin-bottom: 6px; color: ${theme.chart.textColor};">
+                Context Depth: <span style="font-weight: 600; color: ${theme.isDark ? '#f8fafc' : '#0f172a'};">${tokenStr}</span>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 4px; font-size: 11px;">
+                <div style="display: flex; justify-content: space-between;">
+                  <span style="color: #f59e0b;">● Cold Prefill TTFT:</span>
+                  <span style="font-weight: 700; color: #f59e0b;">${step.coldTtft} ms</span>
+                </div>
+                <div style="display: flex; justify-content: space-between;">
+                  <span style="color: #10b981;">● Warm KV-Cache TTFT:</span>
+                  <span style="font-weight: 700; color: #10b981;">${step.warmTtft} ms</span>
+                </div>
+                <div style="display: flex; justify-content: space-between;">
+                  <span style="color: ${theme.chart.textColor};">Acceleration Factor:</span>
+                  <span style="font-weight: 700; color: #10b981;">${step.speedupFactor}x Speedup</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; font-size: 10px; color: ${theme.chart.textColor};">
+                  <span>Generation Speed:</span>
+                  <span>${step.tps} TPS</span>
+                </div>
+              </div>
+            </div>
+          `;
+        },
+      },
+      legend: {
+        top: 6,
+        left: 'center',
+        data: ['Cold Prefill TTFT (ms)', 'Warm KV-Cache TTFT (ms)'],
+        selectedMode: true,
+        textStyle: {
+          color: theme.isDark ? '#cbd5e1' : '#475569',
+          fontSize: 10,
+          fontWeight: 500,
+        },
+        itemGap: 12,
+      },
+      toolbox: {
+        top: 4,
+        right: 6,
+        itemSize: 12,
+        itemGap: 8,
+        iconStyle: { borderColor: theme.chart.textColor },
+        feature: {
+          dataZoom: { yAxisIndex: 'none', title: { zoom: 'Zoom Area', back: 'Restore View' } },
+          restore: { title: 'Reset Scale' },
+          saveAsImage: {
+            title: 'Export PNG',
+            name: `kv_cache_scaling_${runData.runId || 'run'}`,
+            pixelRatio: 2,
+          },
+        },
+      },
+      dataZoom: [
+        {
+          type: 'inside',
+          xAxisIndex: [0],
+          start: 0,
+          end: 100,
+        },
+        {
+          type: 'slider',
+          xAxisIndex: [0],
+          bottom: 2,
+          height: 16,
+          start: 0,
+          end: 100,
+          borderColor: theme.isDark ? '#334155' : '#cbd5e1',
+          backgroundColor: theme.isDark ? 'rgba(15, 23, 42, 0.4)' : 'rgba(241, 245, 249, 0.6)',
+          fillerColor: theme.isDark ? 'rgba(16, 185, 129, 0.25)' : 'rgba(0, 122, 255, 0.2)',
+          handleStyle: { color: '#10b981' },
+          textStyle: { color: theme.chart.textColor, fontSize: 9 },
+        },
+      ],
+      xAxis: {
+        type: 'category',
+        name: 'Context Window Depth',
+        nameLocation: 'middle',
+        nameGap: 24,
+        data: ladderSteps.map(s => s.contextTokens === 0 ? '0' : `${(s.contextTokens / 1024).toFixed(0)}K`),
+        axisLine: { lineStyle: { color: theme.chart.gridColor } },
+        axisLabel: {
+          color: theme.chart.textColor,
+          fontSize: 10,
+          fontFamily: 'monospace',
+        },
+        splitLine: { show: false },
+      },
+      yAxis: {
+        type: 'value',
+        name: 'TTFT (ms)',
+        nameLocation: 'end',
+        axisLine: { show: false },
+        axisLabel: {
+          color: theme.chart.textColor,
+          fontSize: 10,
+          fontFamily: 'monospace',
+          formatter: '{value}ms',
+        },
+        splitLine: {
+          lineStyle: { color: theme.chart.gridColor, type: 'dashed' },
+        },
+      },
+      series: [
+        {
+          name: 'Cold Prefill TTFT (ms)',
+          type: 'line',
+          smooth: true,
+          symbol: 'circle',
+          symbolSize: 8,
+          lineStyle: {
+            color: '#f59e0b',
+            width: 2.5,
+            type: 'dashed' as const,
+          },
+          itemStyle: {
+            color: '#f59e0b',
+            borderColor: '#78350f',
+            borderWidth: 1.5,
+          },
+          data: ladderSteps.map(s => s.coldTtft),
+        },
+        {
+          name: 'Warm KV-Cache TTFT (ms)',
+          type: 'line',
+          smooth: true,
+          symbol: 'circle',
+          symbolSize: 8,
+          lineStyle: {
+            color: '#10b981',
+            width: 3,
+          },
+          itemStyle: {
+            color: '#10b981',
+            borderColor: '#064e3b',
+            borderWidth: 1.5,
+          },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: 'rgba(16, 185, 129, 0.25)' },
+              { offset: 1, color: 'rgba(16, 185, 129, 0.02)' },
+            ]),
+          },
+          data: ladderSteps.map(s => s.warmTtft),
+        },
+      ],
+    };
+  }, [ladderSteps, theme, runData.runId]);
 
   return (
     <div className="space-y-6">
@@ -147,138 +702,12 @@ export const ChartsView: React.FC<ChartsViewProps> = ({
             </div>
           </div>
 
-          <div className="relative w-full overflow-hidden">
-            <svg 
-              viewBox={`0 0 ${chartWidth} ${chartHeight}`} 
-              className="w-full h-auto select-none"
-            >
-              {/* Grid Lines */}
-              {[0, 0.25, 0.5, 0.75, 1].map((pct, idx) => {
-                const y = padding.top + pct * (chartHeight - padding.top - padding.bottom);
-                const val = Math.round(maxTtft - pct * (maxTtft - minTtft));
-                return (
-                  <g key={idx}>
-                    <line 
-                      x1={padding.left} 
-                      y1={y} 
-                      x2={chartWidth - padding.right} 
-                      y2={y} 
-                      stroke={theme.chart.gridColor} 
-                      strokeDasharray="3 3"
-                    />
-                    <text 
-                      x={padding.left - 8} 
-                      y={y + 3} 
-                      fill={theme.chart.textColor} 
-                      fontSize="9" 
-                      textAnchor="end" 
-                      fontFamily="monospace"
-                    >
-                      {val}ms
-                    </text>
-                  </g>
-                );
-              })}
-
-              {/* p50 Median Reference Line */}
-              <line
-                x1={padding.left}
-                y1={getTtftY(summary.ttft.p50)}
-                x2={chartWidth - padding.right}
-                y2={getTtftY(summary.ttft.p50)}
-                stroke={theme.chart.p50LineColor}
-                strokeWidth="1.5"
-                strokeDasharray="4 4"
-              />
-              <text
-                x={chartWidth - padding.right - 4}
-                y={getTtftY(summary.ttft.p50) - 4}
-                fill={theme.chart.p50LineColor}
-                fontSize="9"
-                textAnchor="end"
-                fontFamily="monospace"
-              >
-                p50: {summary.ttft.p50}ms
-              </text>
-
-              {/* p95 Reference Line */}
-              <line
-                x1={padding.left}
-                y1={getTtftY(summary.ttft.p95)}
-                x2={chartWidth - padding.right}
-                y2={getTtftY(summary.ttft.p95)}
-                stroke={theme.chart.p95LineColor}
-                strokeWidth="1.5"
-                strokeDasharray="2 2"
-              />
-              <text
-                x={chartWidth - padding.right - 4}
-                y={getTtftY(summary.ttft.p95) - 4}
-                fill={theme.chart.p95LineColor}
-                fontSize="9"
-                textAnchor="end"
-                fontFamily="monospace"
-              >
-                p95: {summary.ttft.p95}ms
-              </text>
-
-              {/* Scatter Points */}
-              {completedRequests.map((req, idx) => {
-                const x = getTtftX(idx, completedRequests.length);
-                const y = getTtftY(req.ttft);
-                const isTail = req.ttft >= summary.ttft.p95;
-                const isWarm = req.isWarmKvCache;
-
-                return (
-                  <circle
-                    key={req.requestId}
-                    cx={x}
-                    cy={y}
-                    r={isTail ? 4 : isWarm ? 3.5 : 3}
-                    fill={isWarm ? '#10b981' : isTail ? theme.chart.scatterTailColor : theme.chart.scatterDotColor}
-                    stroke={isTail ? theme.chart.scatterTailStroke : theme.chart.scatterDotStroke}
-                    strokeWidth="1"
-                    className="cursor-pointer transition-transform hover:scale-150"
-                    onMouseEnter={() => setHoveredPoint({
-                      x,
-                      y,
-                      title: `Request #${req.requestId}`,
-                      value: `TTFT: ${req.ttft}ms (${req.tps} TPS)`,
-                      details: isWarm ? 'KV Cache Hit (Warm)' : isTail ? 'Tail Latency (≥p95)' : 'Nominal Stream'
-                    })}
-                    onMouseLeave={() => setHoveredPoint(null)}
-                  />
-                );
-              })}
-
-              {/* X Axis Label */}
-              <text 
-                x={chartWidth / 2} 
-                y={chartHeight - 6} 
-                fill={theme.chart.textColor} 
-                fontSize="10" 
-                textAnchor="middle"
-              >
-                Request Sequence (1 to {completedRequests.length})
-              </text>
-            </svg>
-
-            {/* Hover Tooltip */}
-            {hoveredPoint && (
-              <div 
-                className={`absolute pointer-events-none p-2 rounded shadow-lg text-[11px] border z-20 ${theme.chart.tooltipBg} ${theme.chart.tooltipBorder} ${theme.chart.tooltipText}`}
-                style={{ 
-                  left: Math.min(hoveredPoint.x, chartWidth - 140), 
-                  top: Math.max(10, hoveredPoint.y - 45) 
-                }}
-              >
-                <div className="font-semibold">{hoveredPoint.title}</div>
-                <div className="font-mono text-emerald-400">{hoveredPoint.value}</div>
-                {hoveredPoint.details && (
-                  <div className="text-[9px] opacity-75">{hoveredPoint.details}</div>
-                )}
-              </div>
-            )}
+          <div className="w-full">
+            <EChart
+              option={ttftChartOption}
+              theme={theme.isDark ? 'dark' : 'light'}
+              style={{ width: '100%', height: '270px' }}
+            />
           </div>
         </div>
 
@@ -296,99 +725,17 @@ export const ChartsView: React.FC<ChartsViewProps> = ({
             </div>
             <div className="flex items-center gap-2 text-xs font-mono">
               <span className={`font-bold ${theme.accentText}`}>
-                Peak: {Math.round(maxTps)} TPS
+                Peak: {peakTps} TPS
               </span>
             </div>
           </div>
 
-          <div className="relative w-full overflow-hidden">
-            <svg 
-              viewBox={`0 0 ${chartWidth} ${chartHeight}`} 
-              className="w-full h-auto select-none"
-            >
-              <defs>
-                <linearGradient id="tpsGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={theme.chart.tpsAreaStart} stopOpacity="0.35" />
-                  <stop offset="100%" stopColor={theme.chart.tpsAreaEnd} stopOpacity="0.02" />
-                </linearGradient>
-              </defs>
-
-              {/* Grid Lines */}
-              {[0, 0.25, 0.5, 0.75, 1].map((pct, idx) => {
-                const y = padding.top + pct * (chartHeight - padding.top - padding.bottom);
-                const val = Math.round(maxTps - pct * maxTps);
-                return (
-                  <g key={idx}>
-                    <line 
-                      x1={padding.left} 
-                      y1={y} 
-                      x2={chartWidth - padding.right} 
-                      y2={y} 
-                      stroke={theme.chart.gridColor} 
-                      strokeDasharray="3 3"
-                    />
-                    <text 
-                      x={padding.left - 8} 
-                      y={y + 3} 
-                      fill={theme.chart.textColor} 
-                      fontSize="9" 
-                      textAnchor="end" 
-                      fontFamily="monospace"
-                    >
-                      {val}
-                    </text>
-                  </g>
-                );
-              })}
-
-              {/* Area */}
-              {tpsAreaD && (
-                <path d={tpsAreaD} fill="url(#tpsGradient)" />
-              )}
-
-              {/* Line */}
-              {tpsPathD && (
-                <path 
-                  d={tpsPathD} 
-                  fill="none" 
-                  stroke={theme.chart.tpsLineColor} 
-                  strokeWidth="2.5" 
-                  strokeLinecap="round"
-                />
-              )}
-
-              {/* Benchmark Aggregate Average Line */}
-              <line
-                x1={padding.left}
-                y1={getTpsY(summary.aggregateTps)}
-                x2={chartWidth - padding.right}
-                y2={getTpsY(summary.aggregateTps)}
-                stroke={theme.chart.tpsLineColor}
-                strokeWidth="1"
-                strokeDasharray="3 3"
-              />
-              <text
-                x={chartWidth - padding.right - 2}
-                y={getTpsY(summary.aggregateTps) - 4}
-                fill={theme.chart.tpsLineColor}
-                fontSize="9"
-                textAnchor="end"
-                fontFamily="monospace"
-              >
-                Avg {summary.aggregateTps} TPS
-              </text>
-
-              {/* X Axis Label */}
-              <text 
-                x={chartWidth / 2} 
-                y={chartHeight - 6} 
-                fill={theme.chart.textColor} 
-                fontSize="10" 
-                textAnchor="middle"
-              >
-                Elapsed Wall Time (0 to {(maxElapsed / 1000).toFixed(1)}s)
-              </text>
-            </svg>
+          <div className="w-full">
+            <EChart
+              option={tpsChartOption}
+              theme={theme.isDark ? 'dark' : 'light'}
+              style={{ width: '100%', height: '270px' }}
+            />
           </div>
         </div>
       </div>
@@ -423,127 +770,12 @@ export const ChartsView: React.FC<ChartsViewProps> = ({
             </div>
           </div>
 
-          <div className="relative w-full overflow-hidden">
-            <svg 
-              viewBox={`0 0 ${chartWidth} ${chartHeight}`} 
-              className="w-full h-auto select-none"
-            >
-              {/* Grid Lines */}
-              {[0, 0.25, 0.5, 0.75, 1].map((pct, idx) => {
-                const y = padding.top + pct * (chartHeight - padding.top - padding.bottom);
-                const val = Math.round(maxLadderTtft - pct * maxLadderTtft);
-                return (
-                  <g key={idx}>
-                    <line 
-                      x1={padding.left} 
-                      y1={y} 
-                      x2={chartWidth - padding.right} 
-                      y2={y} 
-                      stroke={theme.chart.gridColor} 
-                      strokeDasharray="3 3"
-                    />
-                    <text 
-                      x={padding.left - 8} 
-                      y={y + 3} 
-                      fill={theme.chart.textColor} 
-                      fontSize="9" 
-                      textAnchor="end" 
-                      fontFamily="monospace"
-                    >
-                      {val}ms
-                    </text>
-                  </g>
-                );
-              })}
-
-              {/* Cold TTFT Path */}
-              {(() => {
-                const coldPoints = ladderSteps.map(s => ({
-                  x: getContextX(s.contextTokens),
-                  y: getLadderY(s.coldTtft),
-                }));
-                const coldPathD = coldPoints.reduce((acc, pt, i) => i === 0 ? `M ${pt.x} ${pt.y}` : `${acc} L ${pt.x} ${pt.y}`, '');
-                return (
-                  <path
-                    d={coldPathD}
-                    fill="none"
-                    stroke="#f59e0b"
-                    strokeWidth="2.5"
-                    strokeDasharray="4 2"
-                  />
-                );
-              })()}
-
-              {/* Warm TTFT Path */}
-              {(() => {
-                const warmPoints = ladderSteps.map(s => ({
-                  x: getContextX(s.contextTokens),
-                  y: getLadderY(s.warmTtft),
-                }));
-                const warmPathD = warmPoints.reduce((acc, pt, i) => i === 0 ? `M ${pt.x} ${pt.y}` : `${acc} L ${pt.x} ${pt.y}`, '');
-                return (
-                  <path
-                    d={warmPathD}
-                    fill="none"
-                    stroke="#10b981"
-                    strokeWidth="3"
-                  />
-                );
-              })()}
-
-              {/* Step Dots */}
-              {ladderSteps.map((step, idx) => {
-                const x = getContextX(step.contextTokens);
-                const yCold = getLadderY(step.coldTtft);
-                const yWarm = getLadderY(step.warmTtft);
-
-                return (
-                  <g key={idx}>
-                    {/* Cold Dot */}
-                    <circle
-                      cx={x}
-                      cy={yCold}
-                      r="4.5"
-                      fill="#f59e0b"
-                      stroke="#78350f"
-                      strokeWidth="1.5"
-                      className="cursor-pointer"
-                    />
-                    {/* Warm Dot */}
-                    <circle
-                      cx={x}
-                      cy={yWarm}
-                      r="4.5"
-                      fill="#10b981"
-                      stroke="#064e3b"
-                      strokeWidth="1.5"
-                      className="cursor-pointer"
-                    />
-                    {/* X Tick Label */}
-                    <text
-                      x={x}
-                      y={chartHeight - 12}
-                      fill={theme.chart.textColor}
-                      fontSize="9"
-                      textAnchor="middle"
-                      fontFamily="monospace"
-                    >
-                      {step.contextTokens === 0 ? '0' : `${(step.contextTokens / 1024).toFixed(0)}K`}
-                    </text>
-                  </g>
-                );
-              })}
-
-              <text 
-                x={chartWidth / 2} 
-                y={chartHeight - 2} 
-                fill={theme.chart.textColor} 
-                fontSize="10" 
-                textAnchor="middle"
-              >
-                Context Window Depth (Tokens: 0 to {(maxContext / 1024).toFixed(0)}K)
-              </text>
-            </svg>
+          <div className="w-full">
+            <EChart
+              option={ladderChartOption}
+              theme={theme.isDark ? 'dark' : 'light'}
+              style={{ width: '100%', height: '280px' }}
+            />
           </div>
 
           {/* Sequential Ladder Performance Table */}
