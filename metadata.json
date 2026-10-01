@@ -1,0 +1,8 @@
+{
+  "name": "LLM Agentic Speed Benchmark",
+  "description": "High-precision streaming latency, TTFT, ITL, and throughput benchmarking engine for NVIDIA NIM and LLM inference endpoints.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
