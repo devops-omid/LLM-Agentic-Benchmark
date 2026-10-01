@@ -8,6 +8,25 @@ export interface BenchmarkModel {
   parameterSize: string;
 }
 
+export interface ContextWindowOption {
+  value: number;
+  label: string;
+}
+
+export interface WorkloadPreset {
+  id: string;
+  name: string;
+  description: string;
+  promptTokens: number;
+  targetOutputTokens: number;
+  concurrency: number;
+  totalRequests: number;
+  systemPromptPreset: 'agentic_tool' | 'code_synthesis' | 'doc_reasoning' | 'general';
+  isSequentialLadder?: boolean;
+  ladderSteps?: number[];
+  enableKvCacheReuse?: boolean;
+}
+
 export interface BenchmarkConfig {
   modelId: string;
   promptTokens: number;

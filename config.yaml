@@ -1,0 +1,130 @@
+server:
+  nvidiaNimBaseUrl: "https://integrate.api.nvidia.com/v1"
+  hyperqwenBaseUrl: "http://192.168.1.110:18020/v1"
+  defaultModelFallback: "meta/llama-3.2-11b-vision-instruct"
+  defaultHyperqwenModel: "qwen3.8-27b"
+
+contextWindowOptions:
+  - value: 0
+    label: "0 (Empty Context)"
+  - value: 4096
+    label: "4K (4,096 tokens)"
+  - value: 8192
+    label: "8K (8,192 tokens)"
+  - value: 16384
+    label: "16K (16,384 tokens)"
+  - value: 32768
+    label: "32K (32,768 tokens)"
+  - value: 65536
+    label: "64K (65,536 tokens)"
+  - value: 131072
+    label: "128K (131,072 tokens)"
+  - value: 262144
+    label: "256K (262,144 tokens)"
+
+models:
+  - id: "qwen3.8-27b"
+    name: "Qwen 3.8 27B"
+    provider: "hyperqwen"
+    contextLimit: 153600
+    description: "Local high-performance 27B reasoning model hosted on HyperQwen vLLM with RadixAttention and KV-cache reuse."
+    recommendedConcurrency: 16
+    parameterSize: "27B (HyperQwen vLLM)"
+
+  - id: "meta/llama-3.2-11b-vision-instruct"
+    name: "Llama 3.2 11B Vision Instruct"
+    provider: "nvidia_nim"
+    contextLimit: 131072
+    description: "Fast, cost-effective multimodal model on NVIDIA NIM. High streaming TPS, low latency, and verified active access."
+    recommendedConcurrency: 16
+    parameterSize: "11B (Fast & Cheap NIM)"
+
+  - id: "gemini-3.5-flash-lite"
+    name: "Gemini 3.5 Flash-Lite"
+    provider: "google_gemini"
+    contextLimit: 1048576
+    description: "The least expensive Gemini model. Ultra-low cost ($0.075/1M input tokens, $0.01875 cached), high TPS, 1M context window."
+    recommendedConcurrency: 24
+    parameterSize: "Flash-Lite (Lowest Cost Gemini)"
+
+  - id: "gemini-3.1-flash-lite"
+    name: "Gemini 3.1 Flash-Lite"
+    provider: "google_gemini"
+    contextLimit: 1048576
+    description: "Ultra-low latency compact Gemini model optimized for high-volume agentic pipelines and tool calling."
+    recommendedConcurrency: 24
+    parameterSize: "Flash-Lite 3.1"
+
+  - id: "meta/llama-3.1-70b-instruct"
+    name: "Llama 3.1 70B Instruct"
+    provider: "nvidia_nim"
+    contextLimit: 131072
+    description: "Enterprise open-weight reasoning model on NVIDIA NIM for high-complexity agentic tasks."
+    recommendedConcurrency: 12
+    parameterSize: "70B Heavyweight"
+
+  - id: "meta/llama-3.1-8b-instruct"
+    name: "Llama 3.1 8B Instruct"
+    provider: "nvidia_nim"
+    contextLimit: 131072
+    description: "Compact 8B model baseline for high-throughput concurrency stress tests."
+    recommendedConcurrency: 24
+    parameterSize: "8B Compact"
+
+workloadPresets:
+  - id: "ladder_sequential_16k"
+    name: "Sequential Context Ladder (0 → 64K, 16K Steps)"
+    description: "Chains benchmarks in sequence: 0, 16k, 32k, 48k, 64k tokens. Reuses previous context to leverage KV-cache prefix hits."
+    promptTokens: 16384
+    targetOutputTokens: 256
+    concurrency: 4
+    totalRequests: 5
+    systemPromptPreset: "doc_reasoning"
+    isSequentialLadder: true
+    ladderSteps: [0, 16384, 32768, 49152, 65536]
+    enableKvCacheReuse: true
+
+  - id: "ladder_exponential_256k"
+    name: "Full Scale Deep Context (0 → 256K Exponential)"
+    description: "Measures latency and KV-cache scaling across 0, 4k, 8k, 16k, 32k, 64k, 128k, up to 256k context depth."
+    promptTokens: 32768
+    targetOutputTokens: 256
+    concurrency: 2
+    totalRequests: 8
+    systemPromptPreset: "agentic_tool"
+    isSequentialLadder: true
+    ladderSteps: [0, 4096, 8192, 16384, 32768, 65536, 131072, 262144]
+    enableKvCacheReuse: true
+
+  - id: "agentic_reasoning"
+    name: "Agentic Tool Calling (16K Context)"
+    description: "Simulates multi-turn agent with tool signatures, memory logs, and planning tokens."
+    promptTokens: 16384
+    targetOutputTokens: 512
+    concurrency: 8
+    totalRequests: 16
+    systemPromptPreset: "agentic_tool"
+    isSequentialLadder: false
+    enableKvCacheReuse: true
+
+  - id: "fast_chat"
+    name: "Zero-Context Snappy Chat (0 Tokens TTFT Focus)"
+    description: "Measures raw edge responsiveness and zero-prefill interactive TTFT and token generation."
+    promptTokens: 0
+    targetOutputTokens: 128
+    concurrency: 16
+    totalRequests: 32
+    systemPromptPreset: "general"
+    isSequentialLadder: false
+    enableKvCacheReuse: false
+
+  - id: "stress_test"
+    name: "High Concurrency Stress Test"
+    description: "Pushes server queue and GPU tensor parallelism with sustained parallel streams."
+    promptTokens: 8192
+    targetOutputTokens: 256
+    concurrency: 24
+    totalRequests: 48
+    systemPromptPreset: "doc_reasoning"
+    isSequentialLadder: false
+    enableKvCacheReuse: true
