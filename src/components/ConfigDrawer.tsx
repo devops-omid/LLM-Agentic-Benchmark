@@ -453,6 +453,28 @@ export const ConfigDrawer: React.FC<ConfigDrawerProps> = ({
             <button
               onClick={() => onChangeConfig({
                 ...config,
+                isSequentialLadder: false,
+                promptTokens: config.promptTokens || contextStart,
+              })}
+              disabled={isRunning}
+              className={`py-2 px-3 rounded-md text-xs font-medium transition-all text-center flex flex-col items-center gap-1 ${
+                !config.isSequentialLadder
+                  ? `${theme.activeNavTab} shadow-xs font-semibold`
+                  : `${theme.inactiveNavTab} hover:${theme.textPrimary}`
+              }`}
+            >
+              <div className="flex items-center gap-1.5">
+                <Zap className="w-3.5 h-3.5" />
+                <span>Concurrent Streams</span>
+              </div>
+              <span className="text-[10px] opacity-75 font-normal">
+                {config.concurrency} parallel ({config.totalRequests} runs)
+              </span>
+            </button>
+
+            <button
+              onClick={() => onChangeConfig({
+                ...config,
                 isSequentialLadder: true,
                 ladderSteps: calculatedSteps,
                 enableKvCacheReuse: true,
@@ -466,32 +488,10 @@ export const ConfigDrawer: React.FC<ConfigDrawerProps> = ({
             >
               <div className="flex items-center gap-1.5">
                 <Database className="w-3.5 h-3.5" />
-                <span>Sequential Ladder</span>
+                <span>Sequential KV Ladder</span>
               </div>
               <span className="text-[10px] opacity-75 font-normal">
-                {calculatedSteps.length} stages (KV Cache)
-              </span>
-            </button>
-
-            <button
-              onClick={() => onChangeConfig({
-                ...config,
-                isSequentialLadder: false,
-                promptTokens: config.promptTokens || contextStart,
-              })}
-              disabled={isRunning}
-              className={`py-2 px-3 rounded-md text-xs font-medium transition-all text-center flex flex-col items-center gap-1 ${
-                !config.isSequentialLadder
-                  ? `${theme.activeNavTab} shadow-xs font-semibold`
-                  : `${theme.inactiveNavTab} hover:${theme.textPrimary}`
-              }`}
-            >
-              <div className="flex items-center gap-1.5">
-                <Zap className="w-3.5 h-3.5" />
-                <span>Single Range Point</span>
-              </div>
-              <span className="text-[10px] opacity-75 font-normal">
-                {config.totalRequests} batch requests
+                {calculatedSteps.length} stages (Prefix Cache)
               </span>
             </button>
           </div>

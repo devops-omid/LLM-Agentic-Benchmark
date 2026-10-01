@@ -25,6 +25,7 @@ export interface WorkloadPreset {
   isSequentialLadder?: boolean;
   ladderSteps?: number[];
   enableKvCacheReuse?: boolean;
+  concurrencySweep?: number[];
 }
 
 export interface BenchmarkConfig {
@@ -40,6 +41,7 @@ export interface BenchmarkConfig {
   enableKvCacheReuse?: boolean;
   contextStart?: number;
   contextEnd?: number;
+  concurrencySweep?: number[];
 }
 
 export interface LadderStepResult {
@@ -159,4 +161,6 @@ export interface ConcurrencyStatItem {
   p95Ttft: number;
   totalRequests: number;
   source: 'benchmark' | 'calibrated';
+  runId?: string;
+  timestamp?: string;
 }

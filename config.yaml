@@ -72,6 +72,18 @@ models:
     parameterSize: "8B Compact"
 
 workloadPresets:
+  - id: "concurrency_sweep_1to8"
+    name: "Concurrency Scaling Sweep (1 → 2 → 4 → 8 Streams)"
+    description: "Launches parallel requests across 1, 2, 4, and 8 concurrent streams to measure real cluster throughput scaling and TTFT latency."
+    promptTokens: 512
+    targetOutputTokens: 128
+    concurrency: 8
+    totalRequests: 30
+    systemPromptPreset: "general"
+    isSequentialLadder: false
+    enableKvCacheReuse: false
+    concurrencySweep: [1, 2, 4, 8]
+
   - id: "ladder_sequential_16k"
     name: "Sequential Context Ladder (0 → 64K, 16K Steps)"
     description: "Chains benchmarks in sequence: 0, 16k, 32k, 48k, 64k tokens. Reuses previous context to leverage KV-cache prefix hits."

@@ -17,6 +17,10 @@ export interface WorkloadPreset {
   concurrency: number;
   totalRequests: number;
   systemPromptPreset: 'agentic_tool' | 'code_synthesis' | 'doc_reasoning' | 'general';
+  isSequentialLadder?: boolean;
+  ladderSteps?: number[];
+  enableKvCacheReuse?: boolean;
+  concurrencySweep?: number[];
 }
 
 export interface BenchmarkConfig {
@@ -32,6 +36,7 @@ export interface BenchmarkConfig {
   enableKvCacheReuse?: boolean;
   contextStart?: number;
   contextEnd?: number;
+  concurrencySweep?: number[];
 }
 
 export interface LadderStepResult {
@@ -160,4 +165,6 @@ export interface ConcurrencyStatItem {
   p95Ttft: number;
   totalRequests: number;
   source: 'benchmark' | 'calibrated';
+  runId?: string;
+  timestamp?: string;
 }

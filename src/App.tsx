@@ -57,19 +57,19 @@ export default function App() {
     defaultModel: string;
   } | null>(null);
 
-  // Active configuration: defaults to cheap and fast Llama 3.2 11B Vision Instruct
+  // Active configuration: defaults to parallel concurrent streams for real load testing
   const [config, setConfig] = useState<BenchmarkConfig>({
     modelId: 'qwen3.8-27b',
-    promptTokens: 0,
-    targetOutputTokens: 2048,
+    promptTokens: 256,
+    targetOutputTokens: 256,
     concurrency: 4,
     totalRequests: 8,
     temperature: 0.1,
     systemPromptPreset: 'general',
-    isSequentialLadder: true,
+    isSequentialLadder: false,
     contextStart: 0,
-    contextEnd: 8192,
-    ladderSteps: [0, 2048, 4096, 6144, 8192],
+    contextEnd: 2048,
+    ladderSteps: [0, 512, 1024, 2048],
     enableKvCacheReuse: true,
   });
 
@@ -170,6 +170,10 @@ export default function App() {
       concurrency: preset.concurrency,
       totalRequests: preset.totalRequests,
       systemPromptPreset: preset.systemPromptPreset,
+      isSequentialLadder: Boolean(preset.isSequentialLadder),
+      ladderSteps: preset.ladderSteps,
+      enableKvCacheReuse: preset.enableKvCacheReuse !== undefined ? preset.enableKvCacheReuse : true,
+      concurrencySweep: preset.concurrencySweep,
     }));
   };
 

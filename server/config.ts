@@ -85,3 +85,73 @@ export function getServerEnvConfig() {
     defaultModel: hasHyperqwenKey ? DEFAULT_HYPERQWEN_MODEL : DEFAULT_MODEL_FALLBACK,
   };
 }
+
+let cachedDiscoveredModels: BenchmarkModel[] = [];
+let lastDiscoveryTime = 0;
+
+export async function fetchDiscoveredModels(): Promise<BenchmarkModel[]> {
+  const now = Date.now();
+  if (cachedDiscoveredModels.length > 0 && now - lastDiscoveryTime < 15000) {
+    return cachedDiscoveredModels;
+  }
+
+  const apiKey = process.env.HYPERQWEN_API_KEY;
+  const baseUrl = HYPERQWEN_BASE_URL.replace(/\/+$/, '');
+  const url = baseUrl.endsWith('/v1') ? `${baseUrl}/models` : `${baseUrl}/v1/models`;
+
+  try {
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+    };
+    if (apiKey) {
+      headers['Authorization'] = `Bearer ${apiKey}`;
+    }
+
+    const res = await fetch(url, {
+      method: 'GET',
+      headers,
+      signal: AbortSignal.timeout(3500),
+    });
+
+    if (res.ok) {
+      const json = await res.json() as any;
+      const rawList = Array.isArray(json?.data) ? json.data : (Array.isArray(json) ? json : []);
+      const discovered: BenchmarkModel[] = rawList.map((item: any) => {
+        const id = typeof item === 'string' ? item : item.id;
+        const existing = SUPPORTED_MODELS.find(m => m.id === id);
+        if (existing) return existing;
+        return {
+          id,
+          name: id,
+          provider: 'hyperqwen' as const,
+          contextLimit: item.max_model_len || 131072,
+          description: `Discovered on vLLM server at ${baseUrl}.`,
+          recommendedConcurrency: 16,
+          parameterSize: item.root ? path.basename(item.root) : 'vLLM Model',
+        };
+      });
+      cachedDiscoveredModels = discovered;
+      lastDiscoveryTime = now;
+      return discovered;
+    }
+  } catch (err: any) {
+    console.warn('[Config] Notice: Could not query HyperQwen vLLM /models:', err?.message || err);
+  }
+
+  return cachedDiscoveredModels;
+}
+
+export async function getAllSupportedModels(): Promise<BenchmarkModel[]> {
+  const discovered = await fetchDiscoveredModels();
+  const map = new Map<string, BenchmarkModel>();
+  for (const m of SUPPORTED_MODELS) {
+    map.set(m.id, m);
+  }
+  for (const m of discovered) {
+    if (!map.has(m.id)) {
+      map.set(m.id, m);
+    }
+  }
+  return Array.from(map.values());
+}
+

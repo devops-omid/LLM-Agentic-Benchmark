@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
-import { SUPPORTED_MODELS, WORKLOAD_PRESETS, getServerEnvConfig } from './server/config.js';
+import { SUPPORTED_MODELS, WORKLOAD_PRESETS, getServerEnvConfig, getAllSupportedModels } from './server/config.js';
 import { benchmarkEngine } from './server/engine.js';
 import { 
   getHistoricalRuns, 
@@ -26,11 +26,19 @@ seedInitialRunsIfEmpty().catch(err => {
 
 // ================= API ROUTES =================
 
-app.get('/api/models', (req, res) => {
-  res.json({
-    models: SUPPORTED_MODELS,
-    presets: WORKLOAD_PRESETS,
-  });
+app.get('/api/models', async (req, res) => {
+  try {
+    const models = await getAllSupportedModels();
+    res.json({
+      models,
+      presets: WORKLOAD_PRESETS,
+    });
+  } catch {
+    res.json({
+      models: SUPPORTED_MODELS,
+      presets: WORKLOAD_PRESETS,
+    });
+  }
 });
 
 app.get('/api/env-config', (req, res) => {
@@ -76,6 +84,10 @@ app.post('/api/benchmark/start', async (req, res) => {
       ? Math.min(262144, Math.max(0, Number(config.promptTokens))) 
       : contextStart;
 
+    const concurrencySweep = Array.isArray(config.concurrencySweep) && config.concurrencySweep.length > 0
+      ? config.concurrencySweep.map(n => Math.max(1, Math.min(64, Number(n)))).filter(n => !isNaN(n))
+      : undefined;
+
     const runId = await benchmarkEngine.startBenchmark({
       modelId,
       promptTokens,
@@ -89,6 +101,7 @@ app.post('/api/benchmark/start', async (req, res) => {
       enableKvCacheReuse: config.enableKvCacheReuse !== undefined ? config.enableKvCacheReuse : true,
       contextStart,
       contextEnd,
+      concurrencySweep,
     });
 
     res.json({ runId, status: 'initiated' });
@@ -143,11 +156,12 @@ app.get('/api/history', async (req, res) => {
 
 app.get('/api/concurrency-stats', async (req, res) => {
   try {
-    const modelId = typeof req.query.modelId === 'string' && req.query.modelId.trim()
+    const queryModel = typeof req.query.modelId === 'string' && req.query.modelId.trim()
       ? req.query.modelId.trim()
-      : getServerEnvConfig().defaultModel;
+      : undefined;
+    const modelId = queryModel && queryModel !== 'all' ? queryModel : undefined;
     const stats = await getConcurrencyStats(modelId);
-    res.json({ modelId, stats });
+    res.json({ modelId: modelId || 'all', stats });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

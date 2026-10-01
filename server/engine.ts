@@ -11,6 +11,7 @@ import {
   NVIDIA_NIM_BASE_URL, 
   HYPERQWEN_BASE_URL,
   SUPPORTED_MODELS, 
+  getAllSupportedModels,
   generatePromptPayload 
 } from './config.js';
 import { aggregateBenchmarkMetrics } from './metrics.js';
@@ -36,7 +37,7 @@ class AsyncSemaphore {
   }
 
   release(): void {
-    this.current--;
+    this.current = Math.max(0, this.current - 1);
     if (this.queue.length > 0) {
       this.current++;
       const next = this.queue.shift();
@@ -71,7 +72,9 @@ export class BenchmarkEngine extends EventEmitter {
     if (modelId === 'gemini-2.5-flash-lite' || modelId === 'gemini-2.0-flash-lite' || modelId === 'gemini-2.5-flash') {
       modelId = 'gemini-3.5-flash-lite';
     }
-    const model = SUPPORTED_MODELS.find(m => m.id === modelId) || 
+    const allModels = await getAllSupportedModels();
+    const model = allModels.find(m => m.id === modelId) || 
+      SUPPORTED_MODELS.find(m => m.id === modelId) || 
       SUPPORTED_MODELS.find(m => m.id === 'gemini-3.5-flash-lite') || 
       SUPPORTED_MODELS[0];
     const runId = generateRunId(model.id);
@@ -145,6 +148,7 @@ export class BenchmarkEngine extends EventEmitter {
   ): Promise<void> {
     const benchmarkStartWallTime = performance.now();
     const semaphore = new AsyncSemaphore(config.concurrency);
+    let getActiveWorkersCount = () => semaphore.getActiveCount();
     const requests: SingleRequestMetric[] = [];
     const telemetryPoints: {
       elapsedMs: number;
@@ -154,7 +158,13 @@ export class BenchmarkEngine extends EventEmitter {
       instantaneousTps: number;
     }[] = [];
 
-    const totalRequests = config.totalRequests;
+    const isSweep = Boolean(config.concurrencySweep && config.concurrencySweep.length > 0);
+    const totalRequests = isSweep
+      ? config.concurrencySweep!.reduce((sum, c) => sum + Math.max(c, 2 * c), 0)
+      : (config.isSequentialLadder && config.ladderSteps && config.ladderSteps.length > 0)
+        ? config.ladderSteps.length * (config.enableKvCacheReuse ? 2 : 1)
+        : config.totalRequests;
+
     let completedCount = 0;
     let failedCount = 0;
     let cumulativeTokens = 0;
@@ -175,7 +185,7 @@ export class BenchmarkEngine extends EventEmitter {
     const telemetryInterval = setInterval(() => {
       if (isCancelled()) return;
       const elapsedMs = Math.round(performance.now() - benchmarkStartWallTime);
-      const activeWorkers = semaphore.getActiveCount();
+      const activeWorkers = getActiveWorkersCount();
       const rollingTtft = ttftRollingList.length > 0 
         ? Math.round(ttftRollingList.slice(-10).reduce((a, b) => a + b, 0) / Math.min(10, ttftRollingList.length))
         : 0;
@@ -210,8 +220,176 @@ export class BenchmarkEngine extends EventEmitter {
     const ladderStepsResults: any[] = [];
 
     try {
-      // Check if running in Sequential Context Ladder mode
-      if (config.isSequentialLadder && config.ladderSteps && config.ladderSteps.length > 0) {
+      if (isSweep) {
+        console.log(`[Benchmark ${runId}] Executing Concurrency Sweep across stages: ${config.concurrencySweep!.join(', ')} concurrent streams`);
+        for (const cLevel of config.concurrencySweep!) {
+          if (isCancelled()) break;
+          const stageConcurrency = Math.max(1, Math.min(64, Number(cLevel)));
+          const stageTotalRequests = Math.max(stageConcurrency, 2 * stageConcurrency);
+          const stageSemaphore = new AsyncSemaphore(stageConcurrency);
+          getActiveWorkersCount = () => stageSemaphore.getActiveCount();
+          const stageRunId = `${runId}_c${stageConcurrency}`;
+          const stageStartWallTime = performance.now();
+          const stageRequests: SingleRequestMetric[] = [];
+          const stageTasks = Array.from({ length: stageTotalRequests }, (_, idx) => idx + 1);
+
+          const runStageWorker = async (reqId: number): Promise<void> => {
+            if (isCancelled()) return;
+            await stageSemaphore.acquire();
+            const workerSlot = reqId % stageConcurrency;
+
+            try {
+              if (isCancelled()) return;
+
+              let metric: SingleRequestMetric;
+              if (useRealNvidia) {
+                metric = await this.executeRealNvidiaStream(
+                  reqId, 
+                  workerSlot, 
+                  { ...config, concurrency: stageConcurrency }, 
+                  model, 
+                  promptPayload, 
+                  nvidiaKey!, 
+                  isCancelled
+                );
+              } else if (useRealHyperqwen) {
+                metric = await this.executeRealOpenAICompatibleStream(
+                  reqId, 
+                  workerSlot, 
+                  { ...config, concurrency: stageConcurrency }, 
+                  model, 
+                  promptPayload, 
+                  HYPERQWEN_BASE_URL, 
+                  hyperqwenKey!, 
+                  isCancelled
+                );
+              } else if (useRealGemini) {
+                metric = await this.executeRealGeminiStream(
+                  reqId, 
+                  workerSlot, 
+                  { ...config, concurrency: stageConcurrency }, 
+                  model, 
+                  promptPayload, 
+                  geminiKey!, 
+                  isCancelled
+                );
+              } else {
+                metric = await this.executeCalibratedSimulatedStream(
+                  reqId, 
+                  workerSlot, 
+                  { ...config, concurrency: stageConcurrency }, 
+                  model, 
+                  isCancelled, 
+                  false
+                );
+              }
+
+              stageRequests.push(metric);
+              requests.push(metric);
+
+              if (metric.status === 'completed') {
+                completedCount++;
+                cumulativeTokens += metric.completionTokens;
+                ttftRollingList.push(metric.ttft);
+              } else {
+                failedCount++;
+              }
+
+              const elapsedMs = Math.round(performance.now() - benchmarkStartWallTime);
+              const currentTps = elapsedMs > 0 ? Number(((cumulativeTokens / (elapsedMs / 1000))).toFixed(1)) : 0;
+              const rollingTtft = ttftRollingList.length > 0 
+                ? Math.round(ttftRollingList.slice(-10).reduce((a, b) => a + b, 0) / Math.min(10, ttftRollingList.length))
+                : 0;
+
+              const event: BenchmarkProgressEvent = {
+                runId,
+                status: isCancelled() ? 'cancelled' : 'running',
+                elapsedMs,
+                activeWorkers: stageSemaphore.getActiveCount(),
+                completedCount,
+                failedCount,
+                totalRequests,
+                cumulativeTokens,
+                currentTps,
+                rollingAvgTtft: rollingTtft,
+                latestRequest: {
+                  requestId: metric.requestId,
+                  ttft: metric.ttft,
+                  tps: metric.tps,
+                  completionTokens: metric.completionTokens,
+                  status: metric.status,
+                },
+              };
+
+              this.emit(`stream:${runId}`, event);
+            } catch (err: any) {
+              failedCount++;
+              const failedReq: SingleRequestMetric = {
+                requestId: reqId,
+                workerSlot,
+                startTime: performance.now(),
+                ttft: 0,
+                totalDurationMs: 0,
+                promptTokens: config.promptTokens,
+                completionTokens: 0,
+                tps: 0,
+                itlList: [],
+                avgItl: 0,
+                status: 'failed',
+                statusCode: 500,
+                error: String(err?.message || err),
+              };
+              stageRequests.push(failedReq);
+              requests.push(failedReq);
+            } finally {
+              stageSemaphore.release();
+            }
+          };
+
+          await Promise.all(stageTasks.map(id => runStageWorker(id)));
+
+          getActiveWorkersCount = () => 0;
+
+          // Save completed stage benchmark run to disk
+          const stageWallTimeMs = Math.round(performance.now() - stageStartWallTime);
+          const stageSummary = aggregateBenchmarkMetrics(stageRequests, stageWallTimeMs);
+          const stageRaw: BenchmarkRunRaw = {
+            runId: stageRunId,
+            timestamp: new Date().toISOString(),
+            model: {
+              id: model.id,
+              name: model.name,
+              provider: model.provider,
+              endpoint: useRealNvidia 
+                ? NVIDIA_NIM_BASE_URL 
+                : useRealHyperqwen
+                  ? HYPERQWEN_BASE_URL
+                  : useRealGemini 
+                    ? 'https://generativelanguage.googleapis.com' 
+                    : 'hardware-calibrated-nim-engine',
+            },
+            config: {
+              ...config,
+              concurrency: stageConcurrency,
+              totalRequests: stageTotalRequests,
+            },
+            summary: stageSummary,
+            requests: stageRequests,
+            telemetryPoints: [
+              {
+                elapsedMs: stageWallTimeMs,
+                activeWorkers: 0,
+                completedRequests: stageSummary.completedRequests,
+                cumulativeTokens: stageSummary.totalCompletionTokens,
+                instantaneousTps: stageSummary.aggregateTps,
+              }
+            ],
+          };
+
+          await saveBenchmarkRun(stageRaw);
+          console.log(`[Benchmark ${runId}] Saved sweep stage run: ${stageRunId} (Concurrency ${stageConcurrency}, ${stageSummary.completedRequests} requests, ${stageSummary.aggregateTps} TPS)`);
+        }
+      } else if (config.isSequentialLadder && config.ladderSteps && config.ladderSteps.length > 0) {
       console.log(`[Benchmark ${runId}] Executing Sequential Context Ladder across ${config.ladderSteps.length} stages: ${config.ladderSteps.join(', ')} tokens`);
       
       for (let sIdx = 0; sIdx < config.ladderSteps.length; sIdx++) {
@@ -374,10 +552,7 @@ export class BenchmarkEngine extends EventEmitter {
         const workerSlot = reqId % config.concurrency;
 
         try {
-          if (isCancelled()) {
-            semaphore.release();
-            return;
-          }
+          if (isCancelled()) return;
 
           const isWarm = config.enableKvCacheReuse && reqId > 1 && reqId % 2 === 0;
           let metric: SingleRequestMetric;
@@ -445,7 +620,7 @@ export class BenchmarkEngine extends EventEmitter {
             runId,
             status: isCancelled() ? 'cancelled' : 'running',
             elapsedMs,
-            activeWorkers: semaphore.getActiveCount() - 1,
+            activeWorkers: semaphore.getActiveCount(),
             completedCount,
             failedCount,
             totalRequests,

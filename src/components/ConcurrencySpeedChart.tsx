@@ -86,6 +86,52 @@ export const ConcurrencySpeedChart: React.FC<ConcurrencySpeedChartProps> = ({
     onModelChange?.(newModelId);
   };
 
+  const [sweeping, setSweeping] = useState<boolean>(false);
+
+  const handleRunSweep = useCallback(async () => {
+    if (sweeping) return;
+    setSweeping(true);
+    try {
+      const res = await fetch('/api/benchmark/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          modelId: selectedModelId,
+          concurrencySweep: [1, 2, 4, 8],
+          promptTokens: 256,
+          targetOutputTokens: 128,
+          temperature: 0.1,
+          systemPromptPreset: 'general',
+        }),
+      });
+      if (res.ok) {
+        const { runId } = await res.json();
+        const es = new EventSource(`/api/benchmark/stream/${runId}`);
+        es.onmessage = (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
+              es.close();
+              setSweeping(false);
+              fetchStats(selectedModelId);
+            }
+          } catch {
+            // ignore
+          }
+        };
+        es.onerror = () => {
+          es.close();
+          setSweeping(false);
+          fetchStats(selectedModelId);
+        };
+      } else {
+        setSweeping(false);
+      }
+    } catch {
+      setSweeping(false);
+    }
+  }, [sweeping, selectedModelId, fetchStats]);
+
   // Selected model metadata
   const currentModelMeta = useMemo(() => {
     return models.find(m => m.id === selectedModelId) || {
@@ -192,6 +238,11 @@ export const ConcurrencySpeedChart: React.FC<ConcurrencySpeedChartProps> = ({
                   <span>Tested Load Requests:</span>
                   <span>${stat.totalRequests} runs</span>
                 </div>
+                ${stat.runId ? `
+                <div style="display: flex; justify-content: space-between; font-size: 9px; color: ${theme.chart.textColor}; opacity: 0.8; margin-top: 2px;">
+                  <span>Run ID:</span>
+                  <span style="font-family: monospace;">${stat.runId}</span>
+                </div>` : ''}
               </div>
             </div>
           `;
@@ -431,8 +482,18 @@ export const ConcurrencySpeedChart: React.FC<ConcurrencySpeedChartProps> = ({
           </div>
 
           <button
+            onClick={handleRunSweep}
+            disabled={loading || sweeping}
+            title="Launch live parallel Concurrency Sweep (1, 2, 4, 8 streams)"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-mono font-medium transition-colors bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50 cursor-pointer"
+          >
+            <Zap className={`w-3.5 h-3.5 ${sweeping ? 'animate-pulse text-emerald-300' : ''}`} />
+            <span>{sweeping ? 'Sweeping...' : 'Run Sweep'}</span>
+          </button>
+
+          <button
             onClick={() => fetchStats(selectedModelId)}
-            disabled={loading}
+            disabled={loading || sweeping}
             title="Refresh concurrency telemetry"
             className={`p-1.5 rounded-lg border text-xs transition-colors hover:bg-slate-800/40 disabled:opacity-50 ${theme.borderSubtle} ${theme.textSecondary}`}
           >
@@ -511,13 +572,17 @@ export const ConcurrencySpeedChart: React.FC<ConcurrencySpeedChartProps> = ({
             <div className={`text-xs font-mono font-medium mt-1.5 flex items-center gap-2 ${theme.textPrimary}`}>
               <span className="inline-flex items-center gap-1 text-emerald-400">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" />
-                {kpis.benchmarkCount} Measured
+                {kpis.benchmarkCount} Measured Runs
               </span>
-              <span className="text-slate-500">|</span>
-              <span className="inline-flex items-center gap-1 text-slate-400">
-                <span className="w-2 h-2 rounded-full bg-slate-500 inline-block" />
-                {kpis.calibratedCount} Calibrated
-              </span>
+              {kpis.calibratedCount > 0 && (
+                <>
+                  <span className="text-slate-500">|</span>
+                  <span className="inline-flex items-center gap-1 text-slate-400">
+                    <span className="w-2 h-2 rounded-full bg-slate-500 inline-block" />
+                    {kpis.calibratedCount} Calibrated
+                  </span>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -528,6 +593,24 @@ export const ConcurrencySpeedChart: React.FC<ConcurrencySpeedChartProps> = ({
         {error && (
           <div className="p-4 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-xs font-mono">
             {error}
+          </div>
+        )}
+
+        {!loading && !error && stats.length === 0 && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/50 backdrop-blur-xs rounded-lg p-6 text-center z-10">
+            <Zap className="w-8 h-8 text-emerald-400 mb-2 opacity-80" />
+            <h4 className="text-sm font-semibold text-slate-200">No Benchmark Runs Recorded For This Model</h4>
+            <p className="text-xs text-slate-400 max-w-md mt-1 mb-4">
+              All synthetic data curves have been removed. Click Run Sweep to launch real parallel multi-stream requests and measure throughput scaling.
+            </p>
+            <button
+              onClick={handleRunSweep}
+              disabled={sweeping}
+              className="px-4 py-2 rounded-lg bg-emerald-500 text-slate-950 font-semibold text-xs flex items-center gap-2 hover:bg-emerald-400 shadow-lg shadow-emerald-500/20 transition-all cursor-pointer"
+            >
+              <Zap className="w-4 h-4" />
+              <span>{sweeping ? 'Running Sweep...' : 'Run Concurrency Sweep (1, 2, 4, 8)'}</span>
+            </button>
           </div>
         )}
 
