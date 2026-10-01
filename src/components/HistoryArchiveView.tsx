@@ -69,6 +69,14 @@ export const HistoryArchiveView: React.FC<HistoryArchiveViewProps> = ({
             All Providers ({history.length})
           </button>
           <button
+            onClick={() => setSelectedProvider('hyperqwen')}
+            className={`px-3 py-1 rounded transition-colors ${
+              selectedProvider === 'hyperqwen' ? theme.activeNavTab : theme.inactiveNavTab
+            }`}
+          >
+            HyperQwen
+          </button>
+          <button
             onClick={() => setSelectedProvider('nvidia_nim')}
             className={`px-3 py-1 rounded transition-colors ${
               selectedProvider === 'nvidia_nim' ? theme.activeNavTab : theme.inactiveNavTab
@@ -126,7 +134,7 @@ export const HistoryArchiveView: React.FC<HistoryArchiveViewProps> = ({
                     <td className="py-3 px-3 font-sans">
                       <div className={`font-medium ${theme.textPrimary}`}>{item.model}</div>
                       <div className={`text-[10px] ${theme.textMuted}`}>
-                        {item.provider === 'nvidia_nim' ? 'NVIDIA NIM' : 'Google Gemini'}
+                        {item.provider === 'hyperqwen' ? 'HyperQwen vLLM' : item.provider === 'nvidia_nim' ? 'NVIDIA NIM' : 'Google Gemini'}
                       </div>
                     </td>
                     <td className={`py-3 px-3 text-right tabular-nums ${theme.textSecondary}`}>

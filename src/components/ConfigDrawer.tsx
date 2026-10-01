@@ -32,7 +32,9 @@ interface ConfigDrawerProps {
   envConfig: {
     hasNvidiaKey: boolean;
     hasGeminiKey: boolean;
+    hasHyperqwenKey?: boolean;
     nvidiaBaseUrl: string;
+    hyperqwenBaseUrl?: string;
   } | null;
   theme: ThemeConfig;
 }
@@ -81,6 +83,7 @@ export const ConfigDrawer: React.FC<ConfigDrawerProps> = ({
 
   const isRealNvidia = selectedModel?.provider === 'nvidia_nim' && envConfig?.hasNvidiaKey;
   const isRealGemini = selectedModel?.provider === 'google_gemini' && envConfig?.hasGeminiKey;
+  const isRealHyperqwen = selectedModel?.provider === 'hyperqwen' && envConfig?.hasHyperqwenKey;
 
   // Handlers for the 3-step range flow
   // 1. Output Size selection
@@ -170,6 +173,7 @@ export const ConfigDrawer: React.FC<ConfigDrawerProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
             {models.map(model => {
               const isSelected = model.id === config.modelId;
+              const isHyperqwen = model.provider === 'hyperqwen';
               const isGeminiLite = model.id.includes('flash-lite');
               const isCheapNvidia = model.id === 'meta/llama-3.2-11b-vision-instruct';
 
@@ -188,7 +192,11 @@ export const ConfigDrawer: React.FC<ConfigDrawerProps> = ({
                     <span className={`text-xs font-semibold tracking-tight ${theme.textPrimary}`}>
                       {model.name}
                     </span>
-                    {isGeminiLite ? (
+                    {isHyperqwen ? (
+                      <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/30 whitespace-nowrap font-medium">
+                        Local vLLM 27B
+                      </span>
+                    ) : isGeminiLite ? (
                       <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-500 border border-emerald-500/30 whitespace-nowrap font-medium">
                         Lowest Cost Gemini
                       </span>
@@ -207,7 +215,7 @@ export const ConfigDrawer: React.FC<ConfigDrawerProps> = ({
                   </p>
                   <div className={`mt-2 flex items-center justify-between text-[10px] font-mono ${theme.textMuted}`}>
                     <span>Context Limit: {(model.contextLimit / 1024).toFixed(0)}K</span>
-                    <span>{model.provider === 'nvidia_nim' ? 'NVIDIA NIM' : 'Google Gemini'}</span>
+                    <span>{model.provider === 'hyperqwen' ? 'HyperQwen vLLM' : model.provider === 'nvidia_nim' ? 'NVIDIA NIM' : 'Google Gemini'}</span>
                   </div>
                 </button>
               );
@@ -219,7 +227,9 @@ export const ConfigDrawer: React.FC<ConfigDrawerProps> = ({
             <div className="flex items-center gap-2">
               <Server className="w-3.5 h-3.5 opacity-60" />
               <span className={theme.textMuted}>Backend Connection:</span>
-              {isRealNvidia ? (
+              {isRealHyperqwen ? (
+                <span className={`${theme.accentText} font-medium`}>Real HyperQwen vLLM ({envConfig?.hyperqwenBaseUrl || 'LAN / Local'})</span>
+              ) : isRealNvidia ? (
                 <span className={`${theme.accentText} font-medium`}>Real NVIDIA NIM API ({envConfig?.nvidiaBaseUrl})</span>
               ) : isRealGemini ? (
                 <span className={`${theme.accentText} font-medium`}>Real Google Gemini Streaming API</span>

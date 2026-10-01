@@ -51,13 +51,15 @@ export default function App() {
   const [envConfig, setEnvConfig] = useState<{
     hasNvidiaKey: boolean;
     hasGeminiKey: boolean;
+    hasHyperqwenKey: boolean;
     nvidiaBaseUrl: string;
+    hyperqwenBaseUrl: string;
     defaultModel: string;
   } | null>(null);
 
   // Active configuration: defaults to cheap and fast Llama 3.2 11B Vision Instruct
   const [config, setConfig] = useState<BenchmarkConfig>({
-    modelId: 'meta/llama-3.2-11b-vision-instruct',
+    modelId: 'qwen3.8-27b',
     promptTokens: 0,
     targetOutputTokens: 2048,
     concurrency: 4,
@@ -89,7 +91,9 @@ export default function App() {
       .then(data => {
         if (data.models && data.models.length > 0) {
           setModels(data.models);
-          const defaultM = data.models.find((m: BenchmarkModel) => m.id === 'meta/llama-3.2-11b-vision-instruct') || data.models[0];
+          const defaultM = data.models.find((m: BenchmarkModel) => m.id === 'qwen3.8-27b') ||
+            data.models.find((m: BenchmarkModel) => m.id === 'meta/llama-3.2-11b-vision-instruct') || 
+            data.models[0];
           setConfig(prev => ({ ...prev, modelId: defaultM.id }));
         }
         if (data.presets) {
@@ -347,12 +351,17 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 text-[11px] font-mono">
-            {selectedModel?.provider === 'google_gemini' && envConfig?.hasGeminiKey ? (
+            {selectedModel?.provider === 'hyperqwen' && envConfig?.hasHyperqwenKey ? (
+              <span className={`flex items-center gap-1.5 ${theme.accentText}`}>
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                HyperQwen vLLM Connected
+              </span>
+            ) : selectedModel?.provider === 'google_gemini' && envConfig?.hasGeminiKey ? (
               <span className={`flex items-center gap-1.5 ${theme.accentText}`}>
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 Google Gemini API Connected
               </span>
-            ) : envConfig?.hasNvidiaKey ? (
+            ) : selectedModel?.provider === 'nvidia_nim' && envConfig?.hasNvidiaKey ? (
               <span className={`flex items-center gap-1.5 ${theme.accentText}`}>
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 NVIDIA NIM API Key Connected
