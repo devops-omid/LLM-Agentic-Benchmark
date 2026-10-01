@@ -6,3 +6,7 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Benchmark result artifacts
+data/raw/
+data/reports/
